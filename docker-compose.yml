@@ -1,0 +1,39 @@
+services:
+  community-bot:
+    build: .
+    devices:
+      - "/dev/ttyUSB0:/dev/ttyUSB0"
+    volumes:
+      - ./config.ini:/app/config.ini:rw
+      - ./data:/app/data
+      - ./logs:/app/logs
+    environment:
+      - MESHCORE_CONNECTION_TYPE=${MESHCORE_CONNECTION_TYPE:-serial}
+      - MESHCORE_SERIAL_PORT=${MESHCORE_SERIAL_PORT:-/dev/ttyUSB0}
+      - MESHCORE_BOT_NAME=${MESHCORE_BOT_NAME:-CommunityBot}
+      - MESHCORE_LATITUDE=${MESHCORE_LATITUDE:-}
+      - MESHCORE_LONGITUDE=${MESHCORE_LONGITUDE:-}
+      - COORDINATOR_URL=${COORDINATOR_URL:-}
+      - MESH_REGION=${MESH_REGION:-}
+      - DISCORD_BOT_WEBHOOK_URL=${DISCORD_BOT_WEBHOOK_URL:-}
+      - DISCORD_EMERGENCY_WEBHOOK_URL=${DISCORD_EMERGENCY_WEBHOOK_URL:-}
+      - DISCORD_EMERGENCY_BROADCAST_CHANNEL=${DISCORD_EMERGENCY_BROADCAST_CHANNEL:-}
+      - WEB_VIEWER_ENABLED=${WEB_VIEWER_ENABLED:-true}
+      - WEB_VIEWER_PORT=${WEB_VIEWER_PORT:-8080}
+      - N2YO_API_KEY=${N2YO_API_KEY:-}
+      - AIRNOW_API_KEY=${AIRNOW_API_KEY:-}
+      - TZ=${TZ:-America/Denver}
+    ports:
+      - "${WEB_VIEWER_PORT:-8080}:8080"
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    healthcheck:
+      test: ["CMD-SHELL", "python3 -c \"import urllib.request; urllib.request.urlopen('http://localhost:8080/')\""]
+      interval: 30s
+      timeout: 10s
+      start_period: 60s
+      retries: 3

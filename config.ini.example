@@ -1,0 +1,71 @@
+[Connection]
+connection_type = serial
+serial_port = /dev/ttyUSB0
+# hostname = 192.168.1.100
+# tcp_port = 5555
+# ble_device_name = MeshCore
+timeout = 30
+
+[Bot]
+bot_name = CommunityBot
+enabled = true
+rate_limit_seconds = 10
+bot_tx_rate_limit_seconds = 1.0
+tx_delay_ms = 250
+timezone = America/Denver
+bot_latitude =
+bot_longitude =
+db_path = data/meshcore_bot.db
+
+[Coordinator]
+# URL of the central MeshCore Coordinator API
+# Leave empty to run in standalone mode (no coordination)
+url =
+# IATA-style mesh region code (e.g., DEN, LAX)
+mesh_region =
+# Heartbeat interval in seconds
+heartbeat_interval = 30
+# Timeout for coordination requests in milliseconds
+timeout_ms = 100
+# Batch reporting interval in seconds
+batch_interval = 5
+# Maximum batch size before forced flush
+batch_size = 50
+
+[Channels]
+monitor_channels = #bot
+respond_to_dms = true
+
+[Discord]
+# Discord webhook URLs - set via environment variables for security
+# DISCORD_BOT_WEBHOOK_URL
+bot_webhook_url =
+# DISCORD_EMERGENCY_WEBHOOK_URL
+emergency_webhook_url =
+# Channel to rebroadcast emergency messages to
+emergency_broadcast_channel =
+
+[Web_Viewer]
+enabled = true
+host = 0.0.0.0
+port = 8080
+auto_start = true
+
+[Logging]
+log_level = INFO
+log_file = logs/community_bot.log
+colored_output = true
+
+[External_Data]
+n2yo_api_key =
+airnow_api_key =
+
+[Keywords]
+ping = Pong!
+
+[Banned_Users]
+banned_users =
+
+[Admin_ACL]
+admin_pubkeys =
+admin_commands =
