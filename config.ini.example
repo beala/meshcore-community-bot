@@ -25,8 +25,8 @@ url =
 mesh_region =
 # Heartbeat interval in seconds
 heartbeat_interval = 30
-# Timeout for coordination requests in milliseconds
-timeout_ms = 100
+# Timeout for coordination requests in milliseconds (must accommodate 300ms bidding window)
+timeout_ms = 500
 # Batch reporting interval in seconds
 batch_interval = 5
 # Maximum batch size before forced flush

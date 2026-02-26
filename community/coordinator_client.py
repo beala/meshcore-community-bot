@@ -1,13 +1,10 @@
 """HTTP client for the MeshCore Coordinator API."""
 
-import asyncio
 import hashlib
 import logging
-import os
 import time
 from pathlib import Path
 from typing import Optional
-from uuid import UUID
 
 import httpx
 
@@ -177,8 +174,15 @@ class CoordinatorClient:
         content_prefix: str = "",
         is_dm: bool = False,
         timestamp: int = 0,
+        receiver_snr: Optional[float] = None,
+        receiver_rssi: Optional[int] = None,
+        receiver_hops: Optional[int] = None,
+        receiver_path: Optional[str] = None,
     ) -> Optional[bool]:
         """Ask coordinator if this bot should respond to a message.
+
+        Includes signal data (SNR, RSSI, hops, path) for the coordinator's
+        bidding window to evaluate path quality across competing bots.
 
         Returns:
             True if should respond, False if should not, None if coordinator unreachable.
@@ -186,18 +190,29 @@ class CoordinatorClient:
         if not self.is_registered:
             return None
 
+        payload = {
+            "bot_id": self.bot_id,
+            "message_hash": message_hash,
+            "sender_pubkey": sender_pubkey,
+            "channel": channel or "",
+            "content_prefix": content_prefix,
+            "is_dm": is_dm,
+            "timestamp": timestamp,
+        }
+        # Include signal data when available
+        if receiver_snr is not None:
+            payload["receiver_snr"] = receiver_snr
+        if receiver_rssi is not None:
+            payload["receiver_rssi"] = receiver_rssi
+        if receiver_hops is not None:
+            payload["receiver_hops"] = receiver_hops
+        if receiver_path is not None:
+            payload["receiver_path"] = receiver_path
+
         try:
             resp = await self._client.post(
                 "/api/v1/coordination/should-respond",
-                json={
-                    "bot_id": self.bot_id,
-                    "message_hash": message_hash,
-                    "sender_pubkey": sender_pubkey,
-                    "channel": channel or "",
-                    "content_prefix": content_prefix,
-                    "is_dm": is_dm,
-                    "timestamp": timestamp,
-                },
+                json=payload,
                 headers=self._auth_headers(),
                 timeout=httpx.Timeout(self.timeout_ms / 1000.0),
             )
@@ -232,25 +247,6 @@ class CoordinatorClient:
         except Exception as e:
             logger.debug(f"Batch report failed: {e}")
             return False
-
-    async def heartbeat_loop(self, bot):
-        """Run heartbeat in a loop."""
-        while True:
-            try:
-                uptime = int(time.time() - bot.start_time)
-                contact_count = 0
-                if bot.meshcore and hasattr(bot.meshcore, "contacts"):
-                    contact_count = len(bot.meshcore.contacts) if bot.meshcore.contacts else 0
-
-                await self.heartbeat(
-                    uptime_seconds=uptime,
-                    connected=bot.connected,
-                    contact_count=contact_count,
-                )
-            except Exception as e:
-                logger.debug(f"Heartbeat loop error: {e}")
-
-            await asyncio.sleep(self.heartbeat_interval)
 
     async def close(self):
         """Close the HTTP client."""

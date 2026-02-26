@@ -44,3 +44,9 @@ Thumbs.db
 
 # Config (user-specific)
 config.ini
+
+# Embedded meshcore-bot runtime artifacts
+meshcore-bot/data/
+meshcore-bot/logs/
+meshcore-bot/*.db
+meshcore-bot/config.ini

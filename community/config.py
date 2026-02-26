@@ -11,7 +11,7 @@ class CoordinatorConfig:
     url: str = ""
     bot_token: str = ""
     heartbeat_interval: int = 30
-    coordination_timeout_ms: int = 100
+    coordination_timeout_ms: int = 500
     batch_interval_seconds: int = 5
     batch_max_size: int = 50
     mesh_region: str = ""
@@ -34,7 +34,7 @@ class CoordinatorConfig:
             coordination_timeout_ms=int(
                 os.environ.get(
                     "COORDINATOR_TIMEOUT_MS",
-                    config.get("Coordinator", "timeout_ms", fallback="100"),
+                    config.get("Coordinator", "timeout_ms", fallback="500"),
                 )
             ),
             batch_interval_seconds=int(

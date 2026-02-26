@@ -10,7 +10,6 @@ Wraps the meshcore-bot project (git submodule) and adds:
 """
 
 import asyncio
-import signal
 import sys
 
 from community.community_core import CommunityBot
@@ -18,14 +17,6 @@ from community.community_core import CommunityBot
 
 if __name__ == "__main__":
     bot = CommunityBot()
-
-    def signal_handler(sig, frame):
-        print("\nShutting down...")
-        asyncio.create_task(bot.stop())
-        sys.exit(0)
-
-    signal.signal(signal.SIGINT, signal_handler)
-    signal.signal(signal.SIGTERM, signal_handler)
 
     try:
         asyncio.run(bot.start())

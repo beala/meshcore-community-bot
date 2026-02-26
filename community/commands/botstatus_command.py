@@ -1,13 +1,6 @@
 """Bot status command - shows coordinator connection status."""
 
-import sys
 import time
-from pathlib import Path
-
-# Ensure meshcore-bot modules are importable
-_bot_path = str(Path(__file__).parent.parent.parent / "meshcore-bot")
-if _bot_path not in sys.path:
-    sys.path.insert(0, _bot_path)
 
 from modules.commands.base_command import BaseCommand
 from modules.models import MeshMessage

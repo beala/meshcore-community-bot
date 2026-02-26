@@ -52,15 +52,18 @@ apply_config_override() {
     if [ -n "$value" ]; then
         log_info "Setting [${section}] ${key} from environment"
         python3 -c "
-import configparser
+import configparser, sys, os
 config = configparser.ConfigParser()
 config.read('${config_file}')
-if not config.has_section('${section}'):
-    config.add_section('${section}')
-config.set('${section}', '${key}', '${value}')
+section = sys.argv[1]
+key = sys.argv[2]
+value = sys.argv[3]
+if not config.has_section(section):
+    config.add_section(section)
+config.set(section, key, value)
 with open('${config_file}', 'w') as f:
     config.write(f)
-"
+" "$section" "$key" "$value"
     fi
 }
 

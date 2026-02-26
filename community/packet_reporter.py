@@ -2,12 +2,14 @@
 
 import asyncio
 import logging
-import time
 from typing import Optional
 
 from .coordinator_client import CoordinatorClient
 
 logger = logging.getLogger(__name__)
+
+# Max items to retain on repeated failures to prevent unbounded growth
+MAX_RETAINED_ITEMS = 500
 
 
 class PacketReporter:
@@ -63,9 +65,9 @@ class PacketReporter:
                 "bot_responded": bot_responded,
             })
 
-        # Flush if batch is full
-        if len(self._message_queue) >= self.batch_max_size:
-            await self._flush()
+            # Flush if batch is full
+            if len(self._message_queue) >= self.batch_max_size:
+                await self._flush_locked()
 
     async def add_packet(
         self,
@@ -89,16 +91,14 @@ class PacketReporter:
                 "timestamp": timestamp,
             })
 
-    async def _flush(self):
-        """Send queued messages and packets to the coordinator."""
-        async with self._lock:
-            messages = self._message_queue.copy()
-            packets = self._packet_queue.copy()
-            self._message_queue.clear()
-            self._packet_queue.clear()
-
-        if not messages and not packets:
+    async def _flush_locked(self):
+        """Send queued data. Must be called while holding self._lock."""
+        if not self._message_queue and not self._packet_queue:
             return
+
+        # Take a snapshot of current queues
+        messages = self._message_queue.copy()
+        packets = self._packet_queue.copy()
 
         success = await self.coordinator.report_batch(
             messages=messages,
@@ -106,11 +106,23 @@ class PacketReporter:
         )
 
         if success:
+            # Only clear what we successfully sent
+            self._message_queue = self._message_queue[len(messages):]
+            self._packet_queue = self._packet_queue[len(packets):]
             logger.debug(
                 f"Reported batch: {len(messages)} messages, {len(packets)} packets"
             )
         else:
-            logger.debug("Failed to report batch, data dropped")
+            # Keep data for retry, but cap to prevent unbounded growth
+            if len(self._message_queue) > MAX_RETAINED_ITEMS:
+                dropped = len(self._message_queue) - MAX_RETAINED_ITEMS
+                self._message_queue = self._message_queue[-MAX_RETAINED_ITEMS:]
+                logger.debug(f"Dropped {dropped} oldest messages (queue full)")
+            if len(self._packet_queue) > MAX_RETAINED_ITEMS:
+                dropped = len(self._packet_queue) - MAX_RETAINED_ITEMS
+                self._packet_queue = self._packet_queue[-MAX_RETAINED_ITEMS:]
+                logger.debug(f"Dropped {dropped} oldest packets (queue full)")
+            logger.debug("Failed to report batch, will retry")
 
     async def run(self):
         """Run the reporter loop - flushes batches periodically."""
@@ -121,6 +133,9 @@ class PacketReporter:
         while True:
             await asyncio.sleep(self.batch_interval)
             try:
-                await self._flush()
+                async with self._lock:
+                    await self._flush_locked()
+            except asyncio.CancelledError:
+                raise
             except Exception as e:
                 logger.debug(f"Reporter flush error: {e}")

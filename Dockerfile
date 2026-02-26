@@ -22,7 +22,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Copy Python packages from builder
 COPY --from=builder /install /usr/local
 
-# Copy meshcore-bot submodule
+# Copy meshcore-bot (embedded, not a submodule)
 COPY meshcore-bot/meshcore_bot.py meshcore-bot/meshcore_bot.py
 COPY meshcore-bot/modules/ meshcore-bot/modules/
 COPY meshcore-bot/translations/ meshcore-bot/translations/

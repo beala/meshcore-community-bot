@@ -4,19 +4,24 @@ Inherits from MeshCoreBot and adds:
 - Coordinator registration and heartbeat
 - Message coordination (who should respond)
 - Packet/message reporting to central service
+- Community-specific commands (coverage, botstatus)
 """
 
 import asyncio
+import importlib
+import importlib.util
+import inspect
 import logging
 import sys
 import time
 from pathlib import Path
 
-# Add meshcore-bot submodule to path
+# Add meshcore-bot submodule to path (once, before any meshcore-bot imports)
 _bot_path = str(Path(__file__).parent.parent / "meshcore-bot")
 if _bot_path not in sys.path:
     sys.path.insert(0, _bot_path)
 
+from modules.commands.base_command import BaseCommand
 from modules.core import MeshCoreBot
 
 from .config import CoordinatorConfig
@@ -60,24 +65,71 @@ class CommunityBot(MeshCoreBot):
             bot=self,
             coordinator=self.coordinator,
             fallback=self.coverage_fallback,
+            reporter=self.packet_reporter,
         )
+
+        # Load community-specific commands
+        self._load_community_commands()
 
         # Background tasks
         self._coordinator_tasks: list[asyncio.Task] = []
+        self._registered_with_real_key = False
 
         self.logger.info("Community bot initialized with coordinator support")
+
+    def _load_community_commands(self):
+        """Load community-specific commands into the plugin system.
+
+        The base PluginLoader only scans meshcore-bot/modules/commands/.
+        We manually load commands from community/commands/ and register them.
+        """
+        commands_dir = Path(__file__).parent / "commands"
+        if not commands_dir.exists():
+            return
+
+        for py_file in commands_dir.glob("*.py"):
+            if py_file.name.startswith("_"):
+                continue
+
+            module_name = f"community.commands.{py_file.stem}"
+            try:
+                # Import the module
+                if module_name in sys.modules:
+                    mod = sys.modules[module_name]
+                else:
+                    mod = importlib.import_module(module_name)
+
+                # Find BaseCommand subclass
+                for name, obj in inspect.getmembers(mod, inspect.isclass):
+                    if (issubclass(obj, BaseCommand) and
+                            obj is not BaseCommand and
+                            obj.__module__ == module_name):
+                        instance = obj(self)
+                        cmd_name = instance.name
+                        if cmd_name:
+                            # Register with command manager
+                            self.command_manager.commands[cmd_name] = instance
+                            # Register keywords with plugin loader
+                            if hasattr(self, 'plugin_loader') and self.plugin_loader:
+                                self.plugin_loader.loaded_plugins[cmd_name] = instance
+                                metadata = instance.get_metadata()
+                                self.plugin_loader.plugin_metadata[cmd_name] = metadata
+                                for kw in metadata.get('keywords', []):
+                                    self.plugin_loader.keyword_mappings[kw.lower()] = cmd_name
+                            self.logger.info(f"Loaded community command: {cmd_name}")
+                        break
+            except Exception as e:
+                self.logger.warning(f"Failed to load community command {py_file.name}: {e}")
 
     async def start(self):
         """Start the bot with coordinator integration."""
         self.logger.info("Starting Community Bot...")
 
-        # Register with coordinator (non-blocking - bot works without it)
-        await self._register_with_coordinator()
-
-        # Start coordinator background tasks
+        # Start coordinator background tasks (heartbeat will handle registration)
         self._start_coordinator_tasks()
 
         # Start the base bot (connects to radio, starts event loop)
+        # Registration happens in _heartbeat_loop after radio connects
         await super().start()
 
     async def stop(self):
@@ -98,13 +150,15 @@ class CommunityBot(MeshCoreBot):
         # Stop base bot
         await super().stop()
 
-    async def _register_with_coordinator(self):
-        """Register this bot with the coordinator."""
-        if not self.coordinator.is_configured:
-            self.logger.info("No coordinator URL configured, running standalone")
-            return
+    async def _register_with_coordinator(self) -> bool:
+        """Register this bot with the coordinator using the real radio public key.
 
-        # Get radio public key after connection
+        Returns True if registration succeeded.
+        """
+        if not self.coordinator.is_configured:
+            return False
+
+        # Try to get the real radio public key
         public_key = ""
         if self.meshcore and hasattr(self.meshcore, "self_info"):
             try:
@@ -114,9 +168,9 @@ class CommunityBot(MeshCoreBot):
             except Exception:
                 pass
 
-        # If no public key yet, use a placeholder - will re-register after connect
         if not public_key:
-            public_key = self.config.get("Bot", "bot_name", fallback="unknown")
+            # Radio not connected yet — can't register with real key
+            return False
 
         bot_name = self.config.get("Bot", "bot_name", fallback="CommunityBot")
         lat = self.config.getfloat("Bot", "latitude", fallback=None)
@@ -138,16 +192,19 @@ class CommunityBot(MeshCoreBot):
         )
 
         if success:
-            self.logger.info(f"Registered with coordinator (bot_id={self.coordinator.bot_id})")
-        else:
-            self.logger.warning("Could not register with coordinator, running standalone")
+            self._registered_with_real_key = True
+            self.logger.info(
+                f"Registered with coordinator as {bot_name} "
+                f"(bot_id={self.coordinator.bot_id}, pubkey={public_key[:12]}...)"
+            )
+        return success
 
     def _start_coordinator_tasks(self):
         """Start background tasks for coordinator communication."""
         if not self.coordinator.is_configured:
             return
 
-        # Heartbeat loop
+        # Heartbeat loop (also handles registration)
         task = asyncio.create_task(self._heartbeat_loop())
         self._coordinator_tasks.append(task)
 
@@ -158,9 +215,23 @@ class CommunityBot(MeshCoreBot):
         self.logger.info("Coordinator background tasks started")
 
     async def _heartbeat_loop(self):
-        """Send periodic heartbeats to the coordinator."""
+        """Send periodic heartbeats to the coordinator.
+
+        Also handles registration — waits for the radio to connect,
+        then registers with the real public key.
+        """
         while True:
             try:
+                # If not yet registered with real key, try each heartbeat cycle
+                if not self._registered_with_real_key:
+                    if self.connected and self.meshcore:
+                        success = await self._register_with_coordinator()
+                        if not success:
+                            self.logger.debug("Waiting for radio to provide public key...")
+                    # Don't send heartbeats until registered
+                    await asyncio.sleep(5)
+                    continue
+
                 uptime = int(time.time() - self.start_time)
                 contact_count = 0
                 channel_count = 0
