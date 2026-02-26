@@ -147,20 +147,70 @@ git pull
 docker compose up -d --build
 ```
 
-## Releases
+## Pre-Built Docker Images
 
-Docker images are automatically built on new releases and available at:
-```
-ghcr.io/cj-vana/meshcore-community-bot:latest
-```
+Docker images are automatically built on new releases and published to GitHub Container Registry.
 
-To use the pre-built image instead of building locally, update your `docker-compose.yml`:
+### Using Docker Compose (recommended)
+
+Create a `docker-compose.yml`:
+
 ```yaml
 services:
   community-bot:
     image: ghcr.io/cj-vana/meshcore-community-bot:latest
-    # ... rest of config
+    devices:
+      - "/dev/ttyUSB0:/dev/ttyUSB0"
+    volumes:
+      - ./config.ini:/app/config.ini:rw
+      - ./data:/app/data
+      - ./logs:/app/logs
+    env_file: .env
+    ports:
+      - "${WEB_VIEWER_PORT:-8081}:${WEB_VIEWER_PORT:-8081}"
+    restart: unless-stopped
 ```
+
+Then:
+
+```bash
+cp .env.example .env        # Edit with your settings
+cp config.ini.example config.ini  # Edit with your preferences
+docker compose up -d
+```
+
+### Using Docker Run
+
+```bash
+docker run -d \
+  --name community-bot \
+  --device /dev/ttyUSB0:/dev/ttyUSB0 \
+  -v $(pwd)/config.ini:/app/config.ini:rw \
+  -v $(pwd)/data:/app/data \
+  -v $(pwd)/logs:/app/logs \
+  -p 8081:8081 \
+  -e MESHCORE_CONNECTION_TYPE=serial \
+  -e MESHCORE_SERIAL_PORT=/dev/ttyUSB0 \
+  -e MESHCORE_BOT_NAME=MyBot \
+  -e MESHCORE_LATITUDE=39.7392 \
+  -e MESHCORE_LONGITUDE=-104.9903 \
+  -e MESH_REGION=DEN \
+  -e COORDINATOR_URL=https://coordinator.denvermc.com \
+  -e COORDINATOR_REGISTRATION_KEY=your-key-here \
+  -e WEB_VIEWER_PORT=8081 \
+  -e TZ=America/Denver \
+  --restart unless-stopped \
+  ghcr.io/cj-vana/meshcore-community-bot:latest
+```
+
+### Available Tags
+
+| Tag | Description |
+|-----|-------------|
+| `latest` | Most recent release |
+| `0.1.0` | Specific version |
+
+Images are published at: `ghcr.io/cj-vana/meshcore-community-bot`
 
 ## Development
 
