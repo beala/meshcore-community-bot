@@ -10,10 +10,11 @@ import asyncio
 from typing import List, Optional, Dict, Any, Tuple
 from .base_command import BaseCommand
 from ..models import MeshMessage
+from ..repeater_location_mixin import RepeaterLocationMixin
 from ..utils import calculate_distance
 
 
-class PathCommand(BaseCommand):
+class PathCommand(RepeaterLocationMixin, BaseCommand):
     """Command for decoding path data to repeater names"""
     
     # Plugin metadata
@@ -26,64 +27,28 @@ class PathCommand(BaseCommand):
     
     def __init__(self, bot):
         super().__init__(bot)
-        # Get bot location from config for geographic proximity calculations
-        # Check if geographic guessing is enabled (bot has location configured)
-        self.geographic_guessing_enabled = False
-        self.bot_latitude = None
-        self.bot_longitude = None
-        
-        # Get proximity calculation method from config
+        # Shared geo config (weights, bot location, star bias, age filter, etc.)
+        self._init_location_config()
+
+        # Path-specific config
         self.proximity_method = bot.config.get('Path_Command', 'proximity_method', fallback='simple')
         self.path_proximity_fallback = bot.config.getboolean('Path_Command', 'path_proximity_fallback', fallback=True)
-        self.max_proximity_range = bot.config.getfloat('Path_Command', 'max_proximity_range', fallback=200.0)
-        self.max_repeater_age_days = bot.config.getint('Path_Command', 'max_repeater_age_days', fallback=14)
-        
-        # Get recency/proximity weighting (0.0 to 1.0, where 1.0 = 100% recency, 0.0 = 100% proximity)
-        # Default 0.4 means 40% recency, 60% proximity (more balanced for path routing)
-        recency_weight = bot.config.getfloat('Path_Command', 'recency_weight', fallback=0.4)
-        self.recency_weight = max(0.0, min(1.0, recency_weight))  # Clamp to 0.0-1.0
-        self.proximity_weight = 1.0 - self.recency_weight
-        
-        # Get star bias multiplier (how much to boost starred repeaters' scores)
-        # Default 2.5 means starred repeaters get 2.5x their normal score
-        self.star_bias_multiplier = bot.config.getfloat('Path_Command', 'star_bias_multiplier', fallback=2.5)
-        self.star_bias_multiplier = max(1.0, self.star_bias_multiplier)  # Ensure at least 1.0
-        
-        # Get confidence indicator symbols from config
+
+        # Confidence indicator symbols
         self.high_confidence_symbol = bot.config.get('Path_Command', 'high_confidence_symbol', fallback='🎯')
         self.medium_confidence_symbol = bot.config.get('Path_Command', 'medium_confidence_symbol', fallback='📍')
         self.low_confidence_symbol = bot.config.get('Path_Command', 'low_confidence_symbol', fallback='❓')
-        
-        # Check if "p" shortcut is enabled (off by default)
+
+        # "p" shortcut (off by default)
         self.enable_p_shortcut = bot.config.getboolean('Path_Command', 'enable_p_shortcut', fallback=False)
         if self.enable_p_shortcut:
-            # Add "p" to keywords if enabled
             if "p" not in self.keywords:
                 self.keywords.append("p")
-        
-        try:
-            # Try to get location from Bot section
-            if bot.config.has_section('Bot'):
-                lat = bot.config.getfloat('Bot', 'bot_latitude', fallback=None)
-                lon = bot.config.getfloat('Bot', 'bot_longitude', fallback=None)
-                
-                if lat is not None and lon is not None:
-                    # Validate coordinates
-                    if -90 <= lat <= 90 and -180 <= lon <= 180:
-                        self.bot_latitude = lat
-                        self.bot_longitude = lon
-                        self.geographic_guessing_enabled = True
-                        self.logger.info(f"Geographic proximity guessing enabled with bot location: {lat:.4f}, {lon:.4f}")
-                        self.logger.info(f"Proximity method: {self.proximity_method}")
-                        self.logger.info(f"Max repeater age: {self.max_repeater_age_days} days")
-                    else:
-                        self.logger.warning(f"Invalid bot coordinates in config: {lat}, {lon}")
-                else:
-                    self.logger.info("Bot location not configured - geographic proximity guessing disabled")
-            else:
-                self.logger.info("Bot section not found - geographic proximity guessing disabled")
-        except Exception as e:
-            self.logger.warning(f"Error reading bot location from config: {e} - geographic proximity guessing disabled")
+
+        if self.geographic_guessing_enabled:
+            self.logger.info(f"Geographic proximity guessing enabled with bot location: {self.bot_latitude:.4f}, {self.bot_longitude:.4f}")
+            self.logger.info(f"Proximity method: {self.proximity_method}")
+            self.logger.info(f"Max repeater age: {self.max_repeater_age_days} days")
     
     def matches_keyword(self, message: MeshMessage) -> bool:
         """Check if message starts with 'path' keyword or 'p' shortcut (if enabled)"""
@@ -426,35 +391,8 @@ class PathCommand(BaseCommand):
     
     
     def _get_sender_location(self) -> Optional[Tuple[float, float]]:
-        """Get sender location from current message if available"""
-        try:
-            if not hasattr(self, '_current_message') or not self._current_message:
-                return None
-            
-            sender_pubkey = self._current_message.sender_pubkey
-            if not sender_pubkey:
-                return None
-            
-            # Look up sender location from database (any role, not just repeaters)
-            query = '''
-                SELECT latitude, longitude 
-                FROM complete_contact_tracking 
-                WHERE public_key = ? 
-                AND latitude IS NOT NULL AND longitude IS NOT NULL
-                AND latitude != 0 AND longitude != 0
-                ORDER BY COALESCE(last_advert_timestamp, last_heard) DESC
-                LIMIT 1
-            '''
-            
-            results = self.bot.db_manager.execute_query(query, (sender_pubkey,))
-            
-            if results:
-                row = results[0]
-                return (row['latitude'], row['longitude'])
-            return None
-        except Exception as e:
-            self.logger.debug(f"Error getting sender location: {e}")
-            return None
+        """Get sender location from current message if available."""
+        return self._get_sender_location_sync()
     
     def _select_repeater_by_proximity(self, repeaters: List[Dict[str, Any]], node_id: str = None, path_context: List[str] = None, sender_location: Optional[Tuple[float, float]] = None) -> Tuple[Optional[Dict[str, Any]], float]:
         """
@@ -591,83 +529,7 @@ class PathCommand(BaseCommand):
         
         return best_repeater, confidence
     
-    def _calculate_recency_weighted_scores(self, repeaters: List[Dict[str, Any]]) -> List[Tuple[Dict[str, Any], float]]:
-        """Calculate recency-weighted scores for all repeaters (0.0 to 1.0, higher = more recent)"""
-        from datetime import datetime, timedelta
-        
-        scored_repeaters = []
-        now = datetime.now()
-        
-        for repeater in repeaters:
-            # Get the most recent timestamp from multiple fields
-            most_recent_time = None
-            
-            # Check last_heard from complete_contact_tracking
-            last_heard = repeater.get('last_heard')
-            if last_heard:
-                try:
-                    if isinstance(last_heard, str):
-                        dt = datetime.fromisoformat(last_heard.replace('Z', '+00:00'))
-                    else:
-                        dt = last_heard
-                    if most_recent_time is None or dt > most_recent_time:
-                        most_recent_time = dt
-                except:
-                    pass
-            
-            # Check last_advert_timestamp
-            last_advert = repeater.get('last_advert_timestamp')
-            if last_advert:
-                try:
-                    if isinstance(last_advert, str):
-                        dt = datetime.fromisoformat(last_advert.replace('Z', '+00:00'))
-                    else:
-                        dt = last_advert
-                    if most_recent_time is None or dt > most_recent_time:
-                        most_recent_time = dt
-                except:
-                    pass
-            
-            # Check last_seen from complete_contact_tracking table
-            last_seen = repeater.get('last_seen')
-            if last_seen:
-                try:
-                    if isinstance(last_seen, str):
-                        dt = datetime.fromisoformat(last_seen.replace('Z', '+00:00'))
-                    else:
-                        dt = last_seen
-                    if most_recent_time is None or dt > most_recent_time:
-                        most_recent_time = dt
-                except:
-                    pass
-            
-            if most_recent_time is None:
-                # No timestamp found, give very low score
-                recency_score = 0.1
-            else:
-                # Calculate recency score using exponential decay
-                hours_ago = (now - most_recent_time).total_seconds() / 3600.0
-                
-                # Strong recency bias: recent devices get high scores, older devices get exponentially lower scores
-                # Score = e^(-hours/12) - this gives:
-                # - 1 hour ago: ~0.92
-                # - 6 hours ago: ~0.61
-                # - 12 hours ago: ~0.37
-                # - 24 hours ago: ~0.14
-                # - 48 hours ago: ~0.02
-                # - 72 hours ago: ~0.002
-                import math
-                recency_score = math.exp(-hours_ago / 12.0)
-                
-                # Ensure score is between 0.0 and 1.0
-                recency_score = max(0.0, min(1.0, recency_score))
-            
-            scored_repeaters.append((repeater, recency_score))
-        
-        # Sort by recency score (highest first)
-        scored_repeaters.sort(key=lambda x: x[1], reverse=True)
-        
-        return scored_repeaters
+    # _calculate_recency_weighted_scores is inherited from RepeaterLocationMixin
     
     def _filter_recent_repeaters(self, repeaters: List[Dict[str, Any]], cutoff_hours: int = 24) -> List[Dict[str, Any]]:
         """Filter repeaters to only include those that have advertised recently"""
@@ -866,41 +728,8 @@ class PathCommand(BaseCommand):
             return None, 0.0
     
     def _get_node_location(self, node_id: str) -> Optional[Tuple[float, float]]:
-        """Get location for a node ID from the complete_contact_tracking database"""
-        try:
-            # Build query with age filtering if configured
-            # Use last_advert_timestamp if available, otherwise fall back to last_heard
-            if self.max_repeater_age_days > 0:
-                query = '''
-                    SELECT latitude, longitude, is_starred FROM complete_contact_tracking 
-                    WHERE public_key LIKE ? AND latitude IS NOT NULL AND longitude IS NOT NULL
-                    AND latitude != 0 AND longitude != 0 AND role IN ('repeater', 'roomserver')
-                    AND (
-                        (last_advert_timestamp IS NOT NULL AND last_advert_timestamp >= datetime('now', '-{} days'))
-                        OR (last_advert_timestamp IS NULL AND last_heard >= datetime('now', '-{} days'))
-                    )
-                    ORDER BY is_starred DESC, COALESCE(last_advert_timestamp, last_heard) DESC
-                    LIMIT 1
-                '''.format(self.max_repeater_age_days, self.max_repeater_age_days)
-            else:
-                query = '''
-                    SELECT latitude, longitude, is_starred FROM complete_contact_tracking 
-                    WHERE public_key LIKE ? AND latitude IS NOT NULL AND longitude IS NOT NULL
-                    AND latitude != 0 AND longitude != 0 AND role IN ('repeater', 'roomserver')
-                    ORDER BY is_starred DESC, COALESCE(last_advert_timestamp, last_heard) DESC
-                    LIMIT 1
-                '''
-            
-            prefix_pattern = f"{node_id}%"
-            results = self.bot.db_manager.execute_query(query, (prefix_pattern,))
-            
-            if results:
-                row = results[0]
-                return (row['latitude'], row['longitude'])
-            return None
-        except Exception as e:
-            self.logger.warning(f"Error getting location for node {node_id}: {e}")
-            return None
+        """Get location for a node ID (delegates to mixin with age filtering)."""
+        return self._get_node_location_simple_sync(node_id)
     
     def _select_by_dual_proximity(self, repeaters: List[Dict[str, Any]], prev_location: Tuple[float, float], next_location: Tuple[float, float]) -> Tuple[Optional[Dict[str, Any]], float]:
         """Select repeater based on proximity to both previous and next nodes with strong recency bias"""

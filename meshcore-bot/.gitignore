@@ -128,7 +128,8 @@ bot_cli.py
 bot_start_time.txt
 
 # Test files and development artifacts
-#test_*.py
+test_*.py
+!modules/commands/test_command.py
 test_*.db
 test_*.log
 *_test.py
