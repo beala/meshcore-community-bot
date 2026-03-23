@@ -6,14 +6,21 @@ Passes signal data (SNR, RSSI, hops, path) for path-quality-based bidding.
 Also reports messages to the PacketReporter for batch ingestion.
 """
 
+import asyncio
 import logging
 import time
+import contextvars
+from typing import Tuple
 
 from .coordinator_client import CoordinatorClient
 from .coverage_fallback import CoverageFallback
+from .web_viewer_packet_stream import publish_web_viewer_dm_event, publish_web_viewer_coordination_event
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger('CommunityBot')
 
+# Tracking message for use in send_channel_message patch that would not have access otherwise
+current_message_var = contextvars.ContextVar('current_message')
+coordinated_var = contextvars.ContextVar('coordinated', default=False)
 
 class MessageInterceptor:
     """Intercepts send_response to coordinate with the central coordinator."""
@@ -24,33 +31,72 @@ class MessageInterceptor:
         self.fallback = fallback
         self.reporter = reporter
 
-        # Save reference to the original send_response
+        # Coordinator scoring
+        from .coordinator_scoring import CoordinatorScoring
+        self.coordinator_scoring = CoordinatorScoring(bot.scoring_config)
+
+        # Save reference to the original
+        self._original_process_message = bot.message_handler.process_message
+        self._original_send_channel_message = bot.command_manager.send_channel_message
         self._original_send_response = bot.command_manager.send_response
 
-        # Patch the command manager's send_response
+        # Patch meshcore-bot
+        bot.message_handler.process_message = self._wrapped_process_message
+        bot.command_manager.send_channel_message = self._coordinated_send_channel_message
         bot.command_manager.send_response = self._coordinated_send_response
 
         logger.info("Message interceptor installed on CommandManager.send_response")
+    
+    async def _wrapped_process_message(self, message, *args, **kwargs):
+        token = current_message_var.set(message)
+        try:
+            return await self._original_process_message(message, *args, **kwargs)
+        finally:
+            current_message_var.reset(token)
+    
+    async def _coordinated_send_channel_message(self, channel, content, command_id=None, skip_user_rate_limit=False, rate_limit_key=None):
+        previously_coordinated = coordinated_var.get()
+        if not previously_coordinated: # Keyword Messages that call send_channel_message directly
+            try:
+                message = current_message_var.get()
+                should_send, message_hash = await self._coordinate_should_respond(message)
+                if not should_send:
+                    return True # Graceful silence to avoid error messages
+            except LookupError:
+                logger.warning('[COORDINATOR] send_channel_message no context, sending without coordination')
 
-    async def _coordinated_send_response(self, message, content: str) -> bool:
-        """Coordinated version of send_response.
+        result = await self._original_send_channel_message(channel, content, command_id, skip_user_rate_limit, rate_limit_key)
+        
+        if not previously_coordinated: # Keyword Message not yet reported
+            await self._report_message(message=message if 'message' in locals() else None, bot_responded=result, message_hash=message_hash if 'message_hash' in locals() else "")
+        
+        return result
+    
+    async def _coordinated_send_response(self, message, content: str, **kwargs) -> bool:
+        """Intercept send_response calls, check with coordinator, and report message."""
 
+        should_send, message_hash = await self._coordinate_should_respond(message)
+        coordinated_var.set(True)
+
+        if should_send:
+            result = await self._original_send_response(message, content, **kwargs)
+        else:
+            result = False  # Did not send due to coordinator/fallback decision
+            
+        await self._report_message(message, bot_responded=result, message_hash=message_hash)
+        return result
+
+    async def _coordinate_should_respond(self, message) -> Tuple[bool, str]:
+        """Decision tree on whether to respond to a message, based on coordinator input and fallback logic.
+        True = respond, False = do not respond, returned as soon as proper gate reached.
         For DMs: send immediately (no coordination needed).
-        For channel messages: check with coordinator first, passing signal data
-        for the bidding window to evaluate path quality.
+        For channel messages: check with coordinator first, passing signal data for the bidding window to evaluate path quality.
+
+        Returns:
+            Tuple of (should_respond: bool, message_hash: str) hash for deduplication
         """
-        # DMs always go through - only this bot received the DM
-        if message.is_dm:
-            result = await self._original_send_response(message, content)
-            await self._report_message(message, bot_responded=result)
-            return result
-
-        # If coordinator is not configured, send immediately
-        if not self.coordinator.is_configured:
-            result = await self._original_send_response(message, content)
-            await self._report_message(message, bot_responded=result)
-            return result
-
+        logger.debug(f"[COORDINATOR] Intercepted message from {getattr(message, 'sender_id', None)}")
+        
         # Compute message hash for deduplication
         timestamp = message.timestamp or int(time.time())
         message_hash = CoordinatorClient.compute_message_hash(
@@ -58,10 +104,41 @@ class MessageInterceptor:
             content=message.content or "",
             timestamp=timestamp,
         )
+            
+        # DMs always go through - only this bot received the DM
+        if message.is_dm:
+            logger.info("[COORDINATOR] Message is a DM, bypassing coordinator")
+            asyncio.create_task(publish_web_viewer_dm_event(message, True, self.bot))
+            return True, message_hash
+
+        # If coordinator is not configured, send immediately
+        if not self.coordinator.is_configured:
+            logger.warning("[COORDINATOR] Coordinator not configured, sending without coordination")
+            return True, message_hash
+
+        logger.debug("[COORDINATOR] Message is a channel message, checking with coordinator before responding")
+
+        # Compute delivery score and path metrics
+        db_manager = getattr(self.bot, 'db_manager', None)
+        hop_score, infrastructure, path_bonus, path_freshness = self.coordinator_scoring.get_path_metrics(message, db_manager)
+        delivery_score = self.coordinator_scoring.compute_delivery_score(infrastructure, hop_score, path_bonus, path_freshness)
 
         # Extract content prefix safely
         words = (message.content or "").split()
         content_prefix = words[0][:50] if words else ""
+
+        logger.debug(f"[COORDINATOR] Calling should_respond with: message_hash={message_hash}, sender_pubkey={message.sender_pubkey}, channel={message.channel}, content_prefix={content_prefix}, is_dm=False, timestamp={timestamp}, snr={message.snr}, rssi={message.rssi}, hops={message.hops}, path={message.path}, delivery_score={delivery_score}")
+        asyncio.create_task(publish_web_viewer_coordination_event(
+            bot=self.bot,
+            message=message,
+            message_hash=message_hash,
+            stage="bid",
+            delivery_score=delivery_score,
+            hop_component=hop_score,
+            infra_component=infrastructure,
+            path_bonus_component=path_bonus,
+            freshness_component=path_freshness,
+        ))
 
         # Ask coordinator with signal data for path quality evaluation
         should_respond = await self.coordinator.should_respond(
@@ -75,27 +152,58 @@ class MessageInterceptor:
             receiver_rssi=message.rssi,
             receiver_hops=message.hops,
             receiver_path=message.path,
+            delivery_score=delivery_score,  # Pass delivery score for informed bidding
         )
+
+        logger.debug(f"[COORDINATOR] should_respond result: {should_respond}")
 
         if should_respond is True:
             # Coordinator says we should respond
-            logger.info(f"Coordinator assigned response to us for: {content_prefix}")
-            result = await self._original_send_response(message, content)
-            await self._report_message(message, bot_responded=result, message_hash=message_hash)
-            return result
+            logger.info(f"[COORDINATOR] assigned response to us for: {content_prefix} (API_score={self.coordinator.current_score:.3f}) (delivery_score={delivery_score:.3f})")
+            asyncio.create_task(publish_web_viewer_coordination_event(
+                bot=self.bot,
+                message=message,
+                message_hash=message_hash,
+                stage="assigned_us",
+                delivery_score=delivery_score
+            ))
+            return True, message_hash
 
         if should_respond is False:
             # Coordinator assigned to another bot
-            logger.info(f"Coordinator assigned response to another bot for: {content_prefix}")
-            await self._report_message(message, bot_responded=False, message_hash=message_hash)
-            return True  # Return True so command doesn't report failure
+            logger.info(f"[COORDINATOR] assigned response to another bot for: {content_prefix} (API_score={self.coordinator.current_score:.3f}) (delivery_score={delivery_score:.3f})")
+            asyncio.create_task(publish_web_viewer_coordination_event(
+                bot=self.bot,
+                message=message,
+                message_hash=message_hash,
+                stage="assigned_other",
+                delivery_score=delivery_score
+            ))
+            return False, message_hash
 
         # should_respond is None - coordinator unreachable, use fallback
-        logger.info("Coordinator unreachable, using score-based fallback")
+        logger.info(f"[COORDINATOR] unreachable, using score-based fallback (API_score={self.coordinator.current_score:.3f}) (delivery_score={delivery_score:.3f})")
+        # Fallback: suppress if below min delivery score
+        if delivery_score < self.bot.scoring_config.fallback_min_delivery_score:
+            logger.info(f"[COORDINATOR] Fallback: delivery score {delivery_score:.3f} below min {self.bot.scoring_config.fallback_min_delivery_score}, suppressing response")
+            asyncio.create_task(publish_web_viewer_coordination_event(
+                bot=self.bot,
+                message=message,
+                message_hash=message_hash,
+                stage="fallback_suppressed",
+                delivery_score=delivery_score
+            ))
+            return False, message_hash
         await self.fallback.wait_before_responding()
-        result = await self._original_send_response(message, content)
-        await self._report_message(message, bot_responded=result, message_hash=message_hash)
-        return result
+        logger.info(f"[COORDINATOR] Fallback: sending response after delay")
+        asyncio.create_task(publish_web_viewer_coordination_event(
+            bot=self.bot,
+            message=message,
+            message_hash=message_hash,
+            stage="fallback_sent",
+            delivery_score=delivery_score
+        ))
+        return True, message_hash # Send after fallback delay
 
     async def _report_message(self, message, bot_responded: bool = False, message_hash: str = ""):
         """Report the message to the PacketReporter for batch ingestion."""

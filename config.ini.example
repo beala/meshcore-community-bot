@@ -15,7 +15,7 @@ tx_delay_ms = 250
 timezone = America/Denver
 bot_latitude =
 bot_longitude =
-db_path = data/meshcore_bot.db
+db_path = /app/data/meshcore_bot.db
 
 [Coordinator]
 # URL of the central MeshCore Coordinator API

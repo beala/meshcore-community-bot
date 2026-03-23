@@ -8,7 +8,7 @@ from typing import Optional
 
 import httpx
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger('CommunityBot')
 
 
 class CoordinatorClient:
@@ -91,7 +91,7 @@ class CoordinatorClient:
     ) -> bool:
         """Register this bot with the coordinator."""
         if not self.is_configured:
-            logger.info("No coordinator URL configured, running standalone")
+            logger.warning("No coordinator URL configured, running standalone")
             return False
 
         payload = {
@@ -162,7 +162,7 @@ class CoordinatorClient:
             self.active_bots = data.get("active_bots", 0)
             self.heartbeat_interval = data.get("next_heartbeat_seconds", 30)
             self._last_score_update = time.time()
-
+            logger.info(f"Heartbeat successful: API_score={self.current_score:.3f}, active_bots={self.active_bots}, next={self.heartbeat_interval}s")
             return True
         except Exception as e:
             logger.debug(f"Heartbeat failed: {e}")
@@ -180,16 +180,20 @@ class CoordinatorClient:
         receiver_rssi: Optional[int] = None,
         receiver_hops: Optional[int] = None,
         receiver_path: Optional[str] = None,
+        delivery_score: Optional[float] = None,
     ) -> Optional[bool]:
         """Ask coordinator if this bot should respond to a message.
 
         Includes signal data (SNR, RSSI, hops, path) for the coordinator's
         bidding window to evaluate path quality across competing bots.
 
+        Includes delivery_score for informed bidding based on potential to deliver response quality metrics.
+
         Returns:
             True if should respond, False if should not, None if coordinator unreachable.
         """
         if not self.is_registered:
+            logger.debug("Bot not registered, cannot ask coordinator if should respond")
             return None
 
         payload = {
@@ -210,7 +214,10 @@ class CoordinatorClient:
             payload["receiver_hops"] = receiver_hops
         if receiver_path is not None:
             payload["receiver_path"] = receiver_path
+        if delivery_score is not None:
+            payload["delivery_score"] = delivery_score
 
+        logger.debug('POSTing to coordinator /should-respond')
         try:
             resp = await self._client.post(
                 "/api/v1/coordination/should-respond",
