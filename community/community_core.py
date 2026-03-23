@@ -233,6 +233,10 @@ class CommunityBot(MeshCoreBot):
         if hasattr(self, "coordinator"):
             await self.coordinator.close()
 
+        # Close Discord webhook session
+        from .discord_webhook import close as discord_close
+        await discord_close()
+
         # Stop base bot
         await super().stop()
 

@@ -14,6 +14,7 @@ from typing import Tuple
 
 from .coordinator_client import CoordinatorClient
 from .coverage_fallback import CoverageFallback
+from .discord_webhook import send_to_discord
 from .web_viewer_packet_stream import publish_web_viewer_dm_event, publish_web_viewer_coordination_event
 
 logger = logging.getLogger('CommunityBot')
@@ -35,6 +36,12 @@ class MessageInterceptor:
         from .coordinator_scoring import CoordinatorScoring
         self.coordinator_scoring = CoordinatorScoring(bot.scoring_config)
 
+        # Discord webhook config
+        self._discord_bot_webhook = bot.config.get("Discord", "bot_webhook_url", fallback="")
+        self._discord_emergency_webhook = bot.config.get("Discord", "emergency_webhook_url", fallback="")
+        self._discord_emergency_broadcast = bot.config.get("Discord", "emergency_broadcast_channel", fallback="")
+        self._bot_name = bot.config.get("Bot", "bot_name", fallback="CommunityBot")
+
         # Save reference to the original
         self._original_process_message = bot.message_handler.process_message
         self._original_send_channel_message = bot.command_manager.send_channel_message
@@ -51,6 +58,8 @@ class MessageInterceptor:
         token = current_message_var.set(message)
         coord_token = coordinated_var.set(False)
         try:
+            # Forward incoming message to Discord webhook
+            await self._discord_forward_incoming(message)
             return await self._original_process_message(message, *args, **kwargs)
         finally:
             coordinated_var.reset(coord_token)
@@ -84,9 +93,11 @@ class MessageInterceptor:
 
         if should_send:
             result = await self._original_send_response(message, content, **kwargs)
+            # Forward bot response to Discord webhook
+            await self._discord_forward_response(message, content)
         else:
             result = False  # Did not send due to coordinator/fallback decision
-            
+
         await self._report_message(message, bot_responded=result, message_hash=message_hash)
         return result
 
@@ -249,6 +260,48 @@ class MessageInterceptor:
             )
         except Exception as e:
             logger.debug(f"Failed to report message: {e}")
+
+    def _get_discord_webhook_for_channel(self, channel: str) -> str:
+        """Return the Discord webhook URL for a given channel, or empty string."""
+        if channel == "#bot":
+            return self._discord_bot_webhook
+        elif channel == "#emergency":
+            return self._discord_emergency_webhook
+        return ""
+
+    async def _discord_forward_incoming(self, message):
+        """Forward an incoming channel message to Discord."""
+        if message.is_dm:
+            return
+        webhook_url = self._get_discord_webhook_for_channel(message.channel)
+        if webhook_url:
+            asyncio.create_task(send_to_discord(
+                webhook_url,
+                message.sender_id or "Unknown",
+                message.content or "",
+                is_incoming=True,
+            ))
+        # Rebroadcast emergency messages to configured channel
+        if message.channel == "#emergency" and self._discord_emergency_broadcast:
+            asyncio.create_task(
+                self._original_send_channel_message(
+                    self._discord_emergency_broadcast,
+                    f"EMERGENCY MESSAGE FROM #EMERGENCY: {message.content or ''}",
+                )
+            )
+
+    async def _discord_forward_response(self, message, content: str):
+        """Forward a bot response to Discord."""
+        if message.is_dm:
+            return
+        webhook_url = self._get_discord_webhook_for_channel(message.channel)
+        if webhook_url:
+            asyncio.create_task(send_to_discord(
+                webhook_url,
+                self._bot_name,
+                content,
+                is_incoming=False,
+            ))
 
     def restore(self):
         """Restore the original patched methods."""
