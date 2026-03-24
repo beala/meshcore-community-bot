@@ -21,4 +21,4 @@ start: up logs
 pull:
 	git pull
 
-redeploy: down pull build start
+redeploy: pull build down start
