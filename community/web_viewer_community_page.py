@@ -42,7 +42,7 @@ COMMUNITY_PAGE_HTML = """<!doctype html>
   <style>
     :root { --bg:#f5f7f2; --ink:#1f2a1f; --card:#ffffff; --muted:#4c5b4c; --line:#d6ddd2; --a:#1f6f5f; }
     body { margin:0; font-family: ui-sans-serif, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif; background:var(--bg); color:var(--ink); }
-    .wrap { max-width: 1200px; margin: 24px auto; padding: 0 16px; }
+    .wrap { max-width: 1000px; margin: 24px auto; padding: 0 16px; }
     h1 { margin: 0 0 12px; }
     .meta { color: var(--muted); margin-bottom: 16px; }
     .grid { display:grid; grid-template-columns: repeat(auto-fit,minmax(260px,1fr)); gap: 12px; }
@@ -163,7 +163,8 @@ async function refresh() {
       if (dm.top_users && dm.top_users.length > 0) {
         dmHtml += '<div style=\"margin-top:8px;font-size:12px;color:var(--muted)\"><b>Top delivery:</b></div>';
         dm.top_users.forEach(u => {
-          const statusColor = u.rate >= 80 ? '#2d8a4e' : u.rate >= 50 ? '#b07d1a' : '#888';
+          if (u.rate < 70) return; // Only highlight users with delivery rate above 70%
+          const statusColor = '#2d8a4e'; // Green
           dmHtml += `<div style=\"font-size:11px\"><span style=\"color:${statusColor};font-weight:bold\">${u.rate}%</span> ${u.user} (${u.delivered}/${u.sent})</div>`;
         });
       }
@@ -172,7 +173,8 @@ async function refresh() {
       if (dm.bottom_users && dm.bottom_users.length > 0) {
         dmHtml += '<div style=\"margin-top:6px;font-size:12px;color:var(--muted)\"><b>Needs attention:</b></div>';
         dm.bottom_users.forEach(u => {
-          const statusColor = u.rate >= 80 ? '#2d8a4e' : u.rate >= 50 ? '#b07d1a' : '#c44';
+          if (u.rate >= 70) return; // Only highlight users with delivery rate below 70%
+          const statusColor = u.rate >= 30 ? '#b07d1a' : '#990000'; // Yellow for 30-69%, Red for below 30%
           dmHtml += `<div style=\"font-size:11px\"><span style=\"color:${statusColor};font-weight:bold\">${u.rate}%</span> ${u.user} (${u.delivered}/${u.sent})</div>`;
         });
       }
@@ -306,10 +308,7 @@ def _community_metrics_impl(viewer):
     scoring_cfg = ScoringConfig()
     
     now = time.time()
-    # Calculate local timezone offset in seconds
-    # now_dt = datetime.datetime.now()
-    # now_utc = datetime.datetime.utcnow()
-    # tz_offset_sec = int((now_dt - now_utc).total_seconds())
+
     top_repeaters = []
     stage_counts = {"bid": 0, "assigned_us": 0, "assigned_other": 0, "fallback": 0}
     recent_events = []
@@ -372,7 +371,7 @@ def _community_metrics_impl(viewer):
             LEFT JOIN (
               SELECT public_key, MAX(name) AS name
               FROM complete_contact_tracking
-              WHERE name IS NOT NULL AND name != ''
+              WHERE name IS NOT NULL AND name != '' AND (role = 'repeater' OR role = 'roomserver')
               GROUP BY public_key
             ) AS cct2 ON (
               (mc.to_public_key IS NOT NULL AND cct2.public_key = mc.to_public_key)
@@ -385,10 +384,24 @@ def _community_metrics_impl(viewer):
           )
           rows = cur.fetchall()
 
+          # rows: list of dicts with 'node' as key
+          nodes = sorted(rows, key=lambda r: len(r['node']))
+          deduped = set()
+          deduped_rows = []
+          for r in nodes:
+              node = r['node']
+              # Only add if no existing node is a prefix of this node
+              if not any(node.startswith(existing) and len(node) > len(existing) for existing in deduped):
+                  # Remove any shorter prefixes now covered by this node
+                  deduped = {existing for existing in deduped if not existing.startswith(node)}
+                  deduped.add(node)
+                  deduped_rows.append(r)
+          # deduped_rows is your deduplicated list
+
           # --- Updated infra score logic to match coordinator_scoring.py ---
           # Gather all fan_in values for normalization (deduplication logic)
           node_fanins = []
-          for r in rows:
+          for r in deduped_rows:
             fan_in = int(r["fan_in"] if "fan_in" in r.keys() else 0)
             node_fanins.append(fan_in)
           # Calculate 90th percentile normalization factor (as in coordinator_scoring.py)
@@ -401,7 +414,7 @@ def _community_metrics_impl(viewer):
           else:
             norm_factor = 3
 
-          for r in rows:
+          for r in deduped_rows:
             fan_in = int(r["fan_in"] if "fan_in" in r.keys() else 0)
             out_hops = r["out_hops"] if "out_hops" in r.keys() else None
             age_hours = float(r["age_hours"] if "age_hours" in r.keys() else 999)
@@ -541,9 +554,9 @@ def _community_metrics_impl(viewer):
             # Sort by rate (descending)
             user_rates.sort(key=lambda x: x["rate"], reverse=True)
             
-            # Get top 3 and bottom 3
+            # Get top 3 and bottom 3, display filters applied in frontend for success rate thresholds
             dm_stats["top_users"] = user_rates[:3] if len(user_rates) >= 3 else user_rates
-            dm_stats["bottom_users"] = user_rates[-3:][::-1] if len(user_rates) >= 3 else []
+            dm_stats["bottom_users"] = user_rates[-3:][::-1] if len(user_rates) >= 3 else user_rates[::-1]
 
     finally:
         conn.close()
