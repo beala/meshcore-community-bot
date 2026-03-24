@@ -42,10 +42,7 @@ The bot computes a delivery score for each channel message using:
 ## Requirements
 
 - Docker & Docker Compose
-  <<<<<<< HEAD
-- # `make` — on Debian/Ubuntu: `sudo apt-get install -y make`
-- make — on Debian/Ubuntu: sudo apt-get install -y make (or use Docker Compose and git submodule commands directly)
-  > > > > > > > d7e8695 (makefile and requirements install from lessons learned)
+- Make — on Debian/Ubuntu: `sudo apt-get install -y make` (or use Docker Compose and git submodule commands directly)
 - MeshCore-compatible radio (Heltec V3, RAK Wireless, etc.)
 - USB cable, BLE, or TCP connection to the radio
 
@@ -60,6 +57,12 @@ cd meshcore-community-bot
 
 ### 2. Configure your environment
 
+Find your radio's serial port:
+
+```bash
+ls /dev/serial/by-id/* /dev/ttyUSB*
+```
+
 ```bash
 cp .env.example .env
 ```
@@ -69,7 +72,7 @@ Edit `.env` with your settings:
 ```env
 # Your radio connection
 MESHCORE_CONNECTION_TYPE=serial
-MESHCORE_SERIAL_PORT=/dev/ttyUSB0
+MESHCORE_SERIAL_PORT=/dev/serial/by-id/usb-YourDeviceID # or /dev/ttyUSB0, etc.
 
 # Your bot identity
 MESHCORE_BOT_NAME=MyBot
@@ -92,14 +95,16 @@ cp config.ini.example config.ini
 ### 4. Start the bot
 
 ```bash
-make up
+make start
 ```
 
 This builds and starts the bot, immediately tails the logs. Ctrl+C stops the log tail but leaves the bot running.
 
-> Or use `make up` to start in the background without attaching to logs. `make up` and `make start` both initialise the git submodule automatically.
+> Or use `make up` to start in the background without attaching to logs. Both initialize the git submodule automatically.
 
 ### 5. Check the logs
+
+If you used `make up`, check the logs with:
 
 ```bash
 make logs
@@ -140,7 +145,7 @@ Set these in your `.env` file:
 
 ### Config File
 
-`config.ini` controls bot behavior (keywords, channels, rate limiting, etc.). See [config.ini.example](config.ini.example) for all options.
+`config.ini` controls bot behavior (keywords, channels, rate limiting, etc.). See meshcore-bot [config.ini.example](config.ini.example) for all options.
 
 Key settings:
 
@@ -166,6 +171,8 @@ All commands from meshcore-bot are available, plus:
 
 Update to the latest version and redeploy:
 
+_will pull the latest code, initialize the submodule, rebuild the Docker image, and restart the bot with log tailing_
+
 ```bash
 make redeploy
 ```
@@ -175,6 +182,7 @@ or
 ```bash
 make pull
 make build
+make down
 make up
 ```
 
@@ -191,6 +199,7 @@ git submodule update --remote --merge
 git add meshcore-bot
 git commit -m 'chore: update meshcore-bot submodule'
 make build
+make down
 make up
 ```
 
@@ -202,6 +211,7 @@ git fetch
 git checkout <commit-sha>   # or a branch/tag, e.g. git checkout main
 cd ..
 make build
+make down
 make up
 ```
 
@@ -220,7 +230,7 @@ services:
   community-bot:
     image: ghcr.io/cj-vana/meshcore-community-bot:latest
     devices:
-      - "/dev/ttyUSB0:/dev/ttyUSB0"
+      - "${MESHCORE_SERIAL_PORT:-/dev/ttyUSB0}:/dev/meshcore-usb"
     volumes:
       - ./config.ini:/app/config.ini:rw
       - ./data:/app/data
@@ -244,13 +254,13 @@ make up
 ```bash
 docker run -d \
   --name community-bot \
-  --device /dev/ttyUSB0:/dev/ttyUSB0 \
+  --device "/dev/ttyUSB0:/dev/meshcore-usb" \
   -v $(pwd)/config.ini:/app/config.ini:rw \
   -v $(pwd)/data:/app/data \
   -v $(pwd)/logs:/app/logs \
   -p 8081:8081 \
   -e MESHCORE_CONNECTION_TYPE=serial \
-  -e MESHCORE_SERIAL_PORT=/dev/ttyUSB0 \
+  -e MESHCORE_SERIAL_PORT=/dev/meshcore-usb \
   -e MESHCORE_BOT_NAME=MyBot \
   -e MESHCORE_LATITUDE=39.7392 \
   -e MESHCORE_LONGITUDE=-104.9903 \
