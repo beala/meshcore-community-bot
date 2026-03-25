@@ -6,7 +6,7 @@ class ScoringCommand(BaseCommand):
     """Bid-score diagnostics for bot owners (community extension)."""
 
     name = "scoring"
-    keywords = ["score", "scoring", "repeaters"]
+    keywords = ["scoring"]
     description = "Shows top infra relays and simple bid-health metrics"
     requires_dm = True
     category = "community"
@@ -68,9 +68,13 @@ class ScoringCommand(BaseCommand):
             import math
             # Gather all fan_in values for normalization (deduplication logic)
             node_fanins = []
+            node_hops = []
             for row in infra_rows:
                 fan_in = int(row.get("fan_in") or 0)
                 node_fanins.append(fan_in)
+                out_hops = row.get("out_hops")
+                node_hops.append(out_hops)
+            max_hops = max([h for h in node_hops if h is not None], default=0)
             # Calculate 90th percentile normalization factor (as in coordinator_scoring.py)
             percentile = 0.9
             sorted_fanins = sorted(node_fanins)
@@ -90,7 +94,9 @@ class ScoringCommand(BaseCommand):
                 hops = row.get("out_hops")
                 # Calculate scoring components
                 infra = min(1.0, math.log1p(fan_in) / math.log1p(norm_factor))
-                hop_score = 0.25 if hops is None else (1.0 / (1 + hops))
+
+                max_hop_score = (1.0 / (1 + max_hops)) if max_hops > 0 else 0.1
+                hop_score = (1.0 / (1 + hops)) if hops is not None else max_hop_score
                 # path_bonus = 0.0
                 # freshness = math.exp(-age_hours / 24.0)
                 significance = (

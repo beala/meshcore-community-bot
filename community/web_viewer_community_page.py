@@ -401,9 +401,13 @@ def _community_metrics_impl(viewer):
           # --- Updated infra score logic to match coordinator_scoring.py ---
           # Gather all fan_in values for normalization (deduplication logic)
           node_fanins = []
+          node_hops = []
           for r in deduped_rows:
             fan_in = int(r["fan_in"] if "fan_in" in r.keys() else 0)
+            out_hops = r["out_hops"] if "out_hops" in r.keys() else None
             node_fanins.append(fan_in)
+            node_hops.append(out_hops)
+          max_hops = max([h for h in node_hops if h is not None], default=0)
           # Calculate 90th percentile normalization factor (as in coordinator_scoring.py)
           percentile = 0.9
           sorted_fanins = sorted(node_fanins)
@@ -416,13 +420,14 @@ def _community_metrics_impl(viewer):
 
           for r in deduped_rows:
             fan_in = int(r["fan_in"] if "fan_in" in r.keys() else 0)
-            out_hops = r["out_hops"] if "out_hops" in r.keys() else None
             age_hours = float(r["age_hours"] if "age_hours" in r.keys() else 999)
             # Normalize fan_in using log1p and norm_factor (as in coordinator_scoring.py)
-            norm_score = min(1.0, math.log1p(fan_in) / math.log1p(norm_factor))
-            # For a single node, harmonic mean is just the value itself
-            infra = norm_score
-            hop_score = 0.25 if out_hops is None else (1.0 / (1 + out_hops))
+            infra = min(1.0, math.log1p(fan_in) / math.log1p(norm_factor))
+
+            out_hops = r["out_hops"] if "out_hops" in r.keys() else None
+            max_hop_score = (1.0 / (1 + max_hops)) if max_hops > 0 else 0.1
+            hop_score = (1.0 / (1 + out_hops)) if out_hops is not None else max_hop_score
+
             path_bonus = 0.0
             freshness = math.exp(-age_hours / 24.0)
             significance = (
