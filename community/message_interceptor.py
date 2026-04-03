@@ -8,6 +8,7 @@ Also reports messages to the PacketReporter for batch ingestion.
 
 import asyncio
 import logging
+import re
 import time
 import contextvars
 from typing import Tuple
@@ -126,6 +127,12 @@ class MessageInterceptor:
             asyncio.create_task(publish_web_viewer_dm_event(message, True, self.bot))
             return True, message_hash
 
+        # Direct @[botname] mentions on channel are bot-specific — other bots already
+        # filtered themselves out via mention check, so coordinating would silence everyone
+        if self._is_directly_mentioned(message.content or ""):
+            logger.info("[COORDINATOR] Message directly mentions this bot, bypassing coordinator")
+            return True, message_hash
+
         # If coordinator is not configured, send immediately
         if not self.coordinator.is_configured:
             logger.warning("[COORDINATOR] Coordinator not configured, sending without coordination")
@@ -221,6 +228,14 @@ class MessageInterceptor:
             delivery_score=delivery_score
         ))
         return True, message_hash # Send after fallback delay
+
+    def _is_directly_mentioned(self, text: str) -> bool:
+        """Return True if this bot is explicitly mentioned with @[botname] in the text."""
+        mentions = re.findall(r'@\[([^\]]+)\]', text)
+        if not mentions:
+            return False
+        bot_name_lower = self._bot_name.lower()
+        return any(m.lower() == bot_name_lower for m in mentions)
 
     async def _report_message(self, message, bot_responded: bool = False, message_hash: str = ""):
         """Report the message to the PacketReporter for batch ingestion."""
