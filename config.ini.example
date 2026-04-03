@@ -77,7 +77,7 @@ airnow_api_key =
 # {path_distance} - Total distance between all hops in path with locations (e.g., "123.4km (3 segs, 1 no-loc)")
 # {firstlast_distance} - Distance between first and last repeater in path (e.g., "45.6km" or empty if locations missing)
 # {elapsed} - Elapsed time (e.g. 1234ms) or "Sync Device Clock" when device clock is invalid (use {elapsed} only; do not append ms)
-ping = Pong
+ping = @[{sender}] Pong
 test = "@[{sender}]{phrase_part} | {path} | Dist Travel: {path_distance} in {elapsed}"
 help = "Bot Help: (t)est, ping, (p)ath, channels, (mt)multitest, prefix, sun, moon, solar, dice, roll, joke | More: 'help <cmnd>'"
 cmd = "Bot Cmds: test, ping, help, path, channels, mt, prefix, sun, moon, solar, dice, roll, joke, stats"
