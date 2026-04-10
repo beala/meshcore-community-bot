@@ -19,6 +19,7 @@ bot_longitude =
 db_path = /app/data/meshcore_bot.db
 advert_interval_hours = 24
 startup_advert = flood
+auto_manage_contacts = bot
 
 [Coordinator]
 # URL of the central MeshCore Coordinator API
