@@ -23,6 +23,7 @@ logger = logging.getLogger('CommunityBot')
 # Tracking message for use in send_channel_message patch that would not have access otherwise
 current_message_var = contextvars.ContextVar('current_message')
 coordinated_var = contextvars.ContextVar('coordinated', default=False)
+directly_mentioned_var = contextvars.ContextVar('directly_mentioned', default=False)
 
 class MessageInterceptor:
     """Intercepts send_response to coordinate with the central coordinator."""
@@ -58,6 +59,8 @@ class MessageInterceptor:
     async def _wrapped_process_message(self, message, *args, **kwargs):
         token = current_message_var.set(message)
         coord_token = coordinated_var.set(False)
+        # Capture mention check before message_handler.py strips @[BotName] from content
+        mention_token = directly_mentioned_var.set(self._is_directly_mentioned(message.content or ""))
         try:
             # Forward incoming message to Discord webhook
             await self._discord_forward_incoming(message)
@@ -65,6 +68,7 @@ class MessageInterceptor:
         finally:
             coordinated_var.reset(coord_token)
             current_message_var.reset(token)
+            directly_mentioned_var.reset(mention_token)
     
     async def _coordinated_send_channel_message(self, channel, content, command_id=None, skip_user_rate_limit=False, rate_limit_key=None):
         previously_coordinated = coordinated_var.get()
@@ -128,8 +132,9 @@ class MessageInterceptor:
             return True, message_hash
 
         # Direct @[botname] mentions on channel are bot-specific — other bots already
-        # filtered themselves out via mention check, so coordinating would silence everyone
-        if self._is_directly_mentioned(message.content or ""):
+        # filtered themselves out via mention check, so coordinating would silence everyone.
+        # Use the pre-strip flag since message_handler.py strips the mention before commands run.
+        if directly_mentioned_var.get():
             logger.info("[COORDINATOR] Message directly mentions this bot, bypassing coordinator")
             return True, message_hash
 
