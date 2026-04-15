@@ -70,7 +70,7 @@ class MessageInterceptor:
             current_message_var.reset(token)
             directly_mentioned_var.reset(mention_token)
     
-    async def _coordinated_send_channel_message(self, channel, content, command_id=None, skip_user_rate_limit=False, rate_limit_key=None):
+    async def _coordinated_send_channel_message(self, channel, content, command_id=None, skip_user_rate_limit=False, rate_limit_key=None, scope=None):
         previously_coordinated = coordinated_var.get()
         message = None
         message_hash = ""
@@ -83,7 +83,7 @@ class MessageInterceptor:
             except LookupError:
                 logger.warning('[COORDINATOR] send_channel_message no context, sending without coordination')
 
-        result = await self._original_send_channel_message(channel, content, command_id, skip_user_rate_limit, rate_limit_key)
+        result = await self._original_send_channel_message(channel, content, command_id, skip_user_rate_limit, rate_limit_key, scope)
 
         if not previously_coordinated: # Keyword Message not yet reported
             await self._report_message(message=message, bot_responded=result, message_hash=message_hash)
