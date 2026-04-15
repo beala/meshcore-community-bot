@@ -60,7 +60,9 @@ class MessageInterceptor:
         token = current_message_var.set(message)
         coord_token = coordinated_var.set(False)
         # Capture mention check before message_handler.py strips @[BotName] from content
-        mention_token = directly_mentioned_var.set(self._is_directly_mentioned(message.content or ""))
+        is_mentioned = self._is_directly_mentioned(message.content or "")
+        logger.debug(f"[COORDINATOR] _wrapped_process_message: content={message.content!r}, is_mentioned={is_mentioned}, bot_name={self._bot_name!r}")
+        mention_token = directly_mentioned_var.set(is_mentioned)
         try:
             # Forward incoming message to Discord webhook
             await self._discord_forward_incoming(message)
