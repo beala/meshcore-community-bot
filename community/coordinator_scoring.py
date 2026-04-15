@@ -6,6 +6,7 @@ from .config import ScoringConfig
 
 logger = logging.getLogger('CommunityBot')
 
+
 class CoordinatorScoring:
     """Implements delivery scoring and path metrics for coordination."""
 
@@ -89,7 +90,10 @@ class CoordinatorScoring:
         # Normalize RSSI (assume -120 to -30 dBm typical range)
         rssi_score = 0.5
         if rssi is not None:
-            rssi_score = min(max((rssi + 120) / 90.0, 0.0), 1.0)
+            if (rssi_int := _try_int(rssi)) is not None:
+                rssi_score = min(max((rssi_int + 120) / 90.0, 0.0), 1.0)
+            else:
+                logger.error(f"Could not convert RSSI to int: {repr(rssi)}, using default rssi_score")
         # Blend SNR/RSSI (weight SNR 70%, RSSI 30%)
         signal_score = snr_score * 0.7 + rssi_score * 0.3
 
@@ -261,3 +265,11 @@ class CoordinatorScoring:
                 last_heard_seconds = dt.timestamp() #to match message_stats
                 return recency_calc(now, last_heard_seconds)
         return 0
+
+
+def _try_int(value) -> Optional[int]:
+    """Attempt to coerce value to int, returning None on failure."""
+    try:
+        return int(value)
+    except (ValueError, TypeError):
+        return None
